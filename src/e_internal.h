@@ -138,6 +138,8 @@ struct EchoRuntime {
   NexusCond               *state_cond;
   NexusChannel            *channel;
   NexusThread             *worker_thread;
+  boolean                  starting;
+  boolean                  worker_ready;
   boolean                  started;
   boolean                  closing;
   boolean                  closed;

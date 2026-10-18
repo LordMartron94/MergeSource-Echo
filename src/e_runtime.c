@@ -109,6 +109,11 @@ static void e_runtime_worker(void *user_data) {
   runtime          = (EchoRuntime *)user_data;
   e_worker_runtime = runtime;
 
+  ECHO_INTERNAL_LOCK(runtime->state_mutex);
+  runtime->worker_ready = TRUE;
+  (void)nexus_threads_cond_broadcast(runtime->state_cond);
+  ECHO_INTERNAL_UNLOCK(runtime->state_mutex);
+
   for (;;) {
     error = nexus_threads_channel_receive(runtime->channel, &record, &closed);
     if (error != NEXUS_PROGRAM_ERROR_SUCCESS() || closed != FALSE) {
@@ -214,15 +219,23 @@ NexusError *echo_runtime_start(EchoRuntime *runtime) {
   }
 
   ECHO_INTERNAL_LOCK(runtime->state_mutex);
-  if (runtime->started != FALSE || runtime->closing != FALSE || runtime->closed != FALSE) {
+  if (runtime->starting != FALSE || runtime->started != FALSE || runtime->closing != FALSE || runtime->closed != FALSE) {
     ECHO_INTERNAL_UNLOCK(runtime->state_mutex);
     NEXUS_PROGRAM_CONTEXT_POP();
     return e_echo_error(GLOBAL_ECHO_ERROR_RUNTIME_STATE, "Echo runtime cannot be started in its current state");
   }
-  error = nexus_threads_create(&runtime->worker_thread, e_runtime_worker, runtime);
+  runtime->starting = TRUE;
+  error             = nexus_threads_create(&runtime->worker_thread, e_runtime_worker, runtime);
   if (error == NEXUS_PROGRAM_ERROR_SUCCESS()) {
+    /* Startup cleanup can invoke the memory logger before the consumer enters
+       e_runtime_worker. Keep producers closed until that consumer is ready. */
+    while (runtime->worker_ready == FALSE) {
+      (void)nexus_threads_cond_wait(runtime->state_cond, runtime->state_mutex);
+    }
     runtime->started = TRUE;
   }
+  runtime->starting = FALSE;
+  (void)nexus_threads_cond_broadcast(runtime->state_cond);
   ECHO_INTERNAL_UNLOCK(runtime->state_mutex);
 
   NEXUS_PROGRAM_CONTEXT_POP();
@@ -288,7 +301,7 @@ NexusError *echo_runtime_close(EchoRuntime *runtime) {
   }
 
   ECHO_INTERNAL_LOCK(runtime->state_mutex);
-  while (runtime->closing != FALSE && runtime->closed == FALSE) {
+  while (runtime->starting != FALSE || (runtime->closing != FALSE && runtime->closed == FALSE)) {
     (void)nexus_threads_cond_wait(runtime->state_cond, runtime->state_mutex);
   }
   if (runtime->closed != FALSE) {

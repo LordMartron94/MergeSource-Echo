@@ -396,7 +396,8 @@ extern NEXUS_NODISCARD NexusError *echo_runtime_create(const EchoRuntimeConfigur
 
 /*
 Summary: spawns the worker thread; the runtime accepts log traffic only after this succeeds.
-Errors: returns GLOBAL_ECHO_ERROR_RUNTIME_STATE if runtime is null or already started/closing/closed, or the NexusError from thread creation.
+Description: waits until the consumer has completed startup before admitting records.
+Errors: returns GLOBAL_ECHO_ERROR_RUNTIME_STATE if runtime is null or already starting/started/closing/closed, or the NexusError from thread creation.
 */
 extern NEXUS_NODISCARD NexusError *echo_runtime_start(EchoRuntime *runtime);
 

@@ -1,4 +1,7 @@
+#include <nexus.h>
 #include <echo.h>
+
+#include <setjmp.h>
 
 static NexusError *echo_test_submit(const EchoRecord *record, void *user_data) {
   uint32 *count = (uint32 *)user_data;
@@ -29,6 +32,76 @@ static void echo_test_producer(void *user_data) {
   }
 }
 
+#if NEXUS_MEMORY_TRACING
+static int echo_test_memory_callback_startup(void) {
+  EchoRuntimeConfiguration    configuration;
+  EchoCustomSinkConfiguration sink_configuration;
+  EchoRuntime                *runtime;
+  EchoSystem                 *system;
+  EchoContext                *context;
+  EchoSink                   *sink;
+  EchoRuntimeStatistics       statistics;
+  NexusError                 *error;
+  void                       *allocation;
+  uint32                      count;
+  uint32                      iteration;
+  uint32                      i;
+
+  configuration                       = echo_runtime_configuration_default();
+  configuration.queue_capacity        = 1;
+  sink_configuration.filter           = NULL;
+  sink_configuration.filter_user_data = NULL;
+  sink_configuration.submit           = echo_test_submit;
+  sink_configuration.flush            = echo_test_flush;
+  sink_configuration.destroy          = echo_test_destroy;
+  sink_configuration.user_data        = &count;
+
+  /* A startup trace must never block the worker on its own undrained queue. */
+  for (iteration = 0; iteration < 16U; iteration++) {
+    count = 0;
+    error = echo_runtime_create(&configuration, &runtime);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 40;
+    error = echo_runtime_system_register(runtime, "startup", NULL, &system);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 41;
+    error = echo_context_create(runtime, system, &context);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 42;
+    error = echo_sink_custom_create(&sink_configuration, &sink);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 43;
+    error = echo_runtime_sink_register(runtime, sink);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 44;
+    error = echo_nexus_memory_log_callback_install(context);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 45;
+    error = echo_runtime_start(runtime);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 46;
+
+    for (i = 0; i < 64U; i++) {
+      allocation = nexus_memory_allocate(32U);
+      nexus_memory_deallocate(allocation);
+    }
+    echo_nexus_memory_log_callback_uninstall();
+    error = echo_runtime_flush(runtime);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 47;
+    error = echo_runtime_statistics_get(runtime, &statistics);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS() || statistics.admitted_count != 128U || count != 128U)
+      return 48;
+    error = echo_runtime_close(runtime);
+    if (error != NEXUS_PROGRAM_ERROR_SUCCESS())
+      return 49;
+    echo_context_destroy(context);
+    echo_runtime_destroy(runtime);
+  }
+  return 0;
+}
+#endif
+
 int main(void) {
   EchoRuntimeConfiguration    configuration;
   EchoRuntime                *runtime;
@@ -51,6 +124,14 @@ int main(void) {
   uint32                      i;
   NexusError                 *error;
   uint64                      expected_admitted_count;
+
+#if NEXUS_MEMORY_TRACING
+  int startup_result;
+
+  startup_result = echo_test_memory_callback_startup();
+  if (startup_result != 0)
+    return startup_result;
+#endif
 
   count                   = 0;
   expected_admitted_count = 402;
